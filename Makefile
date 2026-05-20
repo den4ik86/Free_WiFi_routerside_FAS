@@ -1,6 +1,5 @@
 #
-# Makefile for auth_handler (OpenWrt)
-# Предназначен для использования в среде OpenWrt SDK
+# Makefile для auth_handler (OpenWrt 19.07.10)
 #
 
 include $(TOPDIR)/rules.mk
@@ -18,7 +17,7 @@ define Package/$(PKG_NAME)
   CATEGORY:=Network
   SUBMENU:=Captive Portal
   TITLE:=WiFi Authentication Handler
-  DEPENDS:=+libuci +libcurl +libjansson +libpthread
+  DEPENDS:=+libuci +libcurl +jansson +libpthread
   PKGARCH:=all
 endef
 
@@ -35,7 +34,6 @@ endef
 define Build/Configure
 endef
 
-# Сама компиляция
 define Build/Compile
 	$(TARGET_CC) $(TARGET_CFLAGS) -std=gnu99 \
 		-I$(STAGING_DIR)/usr/include \
@@ -46,18 +44,14 @@ define Build/Compile
 		-luci -lcurl -ljansson -lpthread
 endef
 
-# Установка файлов в целевой образ
 define Package/$(PKG_NAME)/install
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/auth_handler $(1)/usr/libexec/
 	
-	# Пример установки конфигурации (опционально)
 	$(INSTALL_DIR) $(1)/etc/config
-	$(INSTALL_DATA) ./files/auth_handler.config $(1)/etc/config/auth_handler || true
+	-$(INSTALL_DATA) ./files/auth_handler.config $(1)/etc/config/auth_handler
 	
-	# Пример установки веб-файлов (если нужно)
 	$(INSTALL_DIR) $(1)/tmp/www
 endef
 
-# Определение пакета
 $(eval $(call BuildPackage,$(PKG_NAME)))
