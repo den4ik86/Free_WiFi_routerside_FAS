@@ -19,6 +19,7 @@
 #define VIDEO_PATH MEDIA_BASE_PATH "/img/video"
 #define BANNERS_PATH MEDIA_BASE_PATH "/img/banners"
 #define LOGOS_PATH MEDIA_BASE_PATH "/img/logos"
+#define DHCP_LEASES_FILE "/tmp/dhcp.leases"
 
 // Структуры
 typedef struct {
@@ -32,7 +33,6 @@ typedef struct {
 } Config;
 
 typedef struct {
-    char mac[20];
     char authaction[256];
     char ip[20];
     char gateway[50];
@@ -60,6 +60,51 @@ typedef struct {
 // Глобальные переменные
 static Config config;
 static MediaRotation media = {0};
+
+// Функция для получения MAC-адреса из DHCP leases по IP
+int get_mac_from_dhcp_leases(const char *client_ip, char *mac, size_t mac_size) {
+    FILE *leases = fopen(DHCP_LEASES_FILE, "r");
+    if (!leases) {
+        syslog(LOG_ERR, "Cannot open %s", DHCP_LEASES_FILE);
+        return -1;
+    }
+    
+    char line[512];
+    char leases_mac[20];
+    char leases_ip[20];
+    char leases_hostname[256];
+    char leases_id[256];
+    
+    while (fgets(line, sizeof(line), leases)) {
+        // Формат: expires mac ip hostname id
+        // Пример: 1698765432 00:11:22:33:44:55 192.168.1.100 hostname *
+        int parsed = sscanf(line, "%*s %s %s %s %s", 
+                            leases_mac, leases_ip, leases_hostname, leases_id);
+        
+        if (parsed >= 2) {
+            // Удаляем двоеточия из MAC-адреса
+            if (strcmp(leases_ip, client_ip) == 0) {
+                char *src = leases_mac;
+                char *dst = mac;
+                while (*src) {
+                    if (*src != ':') {
+                        *dst++ = *src;
+                    }
+                    src++;
+                }
+                *dst = '\0';
+                
+                fclose(leases);
+                syslog(LOG_DEBUG, "Found MAC %s for IP %s in DHCP leases", mac, client_ip);
+                return 0;
+            }
+        }
+    }
+    
+    fclose(leases);
+    syslog(LOG_ERR, "MAC not found for IP %s in DHCP leases", client_ip);
+    return -1;
+}
 
 // Загрузка конфигурации
 int load_config() {
@@ -135,11 +180,9 @@ char** get_files_from_dir(const char *path, int *count) {
     }
     
     while ((entry = readdir(dir)) != NULL) {
-        // Пропускаем . и ..
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
             continue;
             
-        // Проверяем расширения файлов
         char *ext = strrchr(entry->d_name, '.');
         if (ext) {
             if (strstr(path, "video") && 
@@ -147,7 +190,6 @@ char** get_files_from_dir(const char *path, int *count) {
                  strcmp(ext, ".mov") == 0 || strcmp(ext, ".mkv") == 0)) {
                 // Видео файлы
             } else if (strstr(path, "banners") || strstr(path, "logos")) {
-                // Изображения
                 if (strcmp(ext, ".jpg") != 0 && strcmp(ext, ".jpeg") != 0 &&
                     strcmp(ext, ".png") != 0 && strcmp(ext, ".gif") != 0)
                     continue;
@@ -170,7 +212,6 @@ char** get_files_from_dir(const char *path, int *count) {
         files[*count] = strdup(entry->d_name);
         if (!files[*count]) {
             closedir(dir);
-            // Освобождаем уже выделенную память
             for (int i = 0; i < *count; i++) free(files[i]);
             free(files);
             return NULL;
@@ -186,7 +227,6 @@ char** get_files_from_dir(const char *path, int *count) {
 int load_rotation() {
     FILE *file = fopen(ROTATION_FILE, "r");
     if (!file) {
-        // Файл не существует, создаем начальные значения
         media.video_index = 0;
         media.banner_index = 0;
         media.logo_index = 0;
@@ -252,19 +292,16 @@ int save_rotation() {
 
 // Инициализация медиафайлов
 int init_media_rotation() {
-    // Загружаем файлы из директорий
     media.video_files = get_files_from_dir(VIDEO_PATH, &media.video_count);
     media.banner_files = get_files_from_dir(BANNERS_PATH, &media.banner_count);
     media.logo_files = get_files_from_dir(LOGOS_PATH, &media.logo_count);
     
-    // Загружаем состояние ротации
     if (load_rotation() != 0) {
         media.video_index = 0;
         media.banner_index = 0;
         media.logo_index = 0;
     }
     
-    // Если нет файлов, устанавливаем значения по умолчанию
     if (media.video_count == 0) {
         media.video_files = malloc(sizeof(char*));
         media.video_files[0] = strdup("head_phone.mp4");
@@ -357,7 +394,7 @@ void url_decode(char *dst, const char *src) {
     *dst = 0;
 }
 
-// Парсинг query string
+// Парсинг query string (без mac параметра)
 void parse_query_string(const char *query, QueryParams *params) {
     if (!query || !*query) return;
     
@@ -371,8 +408,7 @@ void parse_query_string(const char *query, QueryParams *params) {
             char decoded[512];
             url_decode(decoded, eq + 1);
             
-            if (strcmp(token, "mac") == 0) strncpy(params->mac, decoded, sizeof(params->mac)-1);
-            else if (strcmp(token, "authaction") == 0) strncpy(params->authaction, decoded, sizeof(params->authaction)-1);
+            if (strcmp(token, "authaction") == 0) strncpy(params->authaction, decoded, sizeof(params->authaction)-1);
             else if (strcmp(token, "clientip") == 0) strncpy(params->ip, decoded, sizeof(params->ip)-1);
             else if (strcmp(token, "gatewayname") == 0) strncpy(params->gateway, decoded, sizeof(params->gateway)-1);
             else if (strcmp(token, "tok") == 0) strncpy(params->token, decoded, sizeof(params->token)-1);
@@ -384,7 +420,7 @@ void parse_query_string(const char *query, QueryParams *params) {
     free(query_copy);
 }
 
-// Проверка MAC на сервере
+// Проверка MAC на сервере (использует полученный MAC из DHCP leases)
 int check_mac_on_server(const char *mac, char **server_mac) {
     CURL *curl = curl_easy_init();
     if (!curl) return -1;
@@ -408,7 +444,6 @@ int check_mac_on_server(const char *mac, char **server_mac) {
         return -1;
     }
     
-    // Парсинг JSON
     json_error_t error;
     json_t *root = json_loads(response.data, 0, &error);
     
@@ -427,8 +462,8 @@ int check_mac_on_server(const char *mac, char **server_mac) {
     return (*server_mac) ? 0 : -1;
 }
 
-// HTML для зарегистрированных
-void output_reg_page(const QueryParams *params) {
+// HTML для зарегистрированных (с использованием MAC)
+void output_reg_page(const QueryParams *params, const char *mac) {
     const char *banner = get_next_banner();
     const char *logo = get_next_logo();
     
@@ -457,12 +492,12 @@ void output_reg_page(const QueryParams *params) {
            "});</script>"
            "</body></html>",
            banner,
-           config.tg_stat_url, params->mac, params->gateway,
-           config.stat_url, params->gateway, banner, params->mac);
+           config.tg_stat_url, mac, params->gateway,
+           config.stat_url, params->gateway, banner, mac);
 }
 
-// HTML для регистрации
-void output_no_reg_page(const QueryParams *params) {
+// HTML для регистрации (с использованием MAC)
+void output_no_reg_page(const QueryParams *params, const char *mac) {
     const char *video = get_next_video();
     const char *logo = get_next_logo();
     const char *banner = get_next_banner();
@@ -476,7 +511,6 @@ void output_no_reg_page(const QueryParams *params) {
            "<title>Регистрация Wi-Fi</title></head><body>"
            "<div class='page-container'>"
            
-           // Модальное окно пользовательского соглашения
            "<div class='agreement-modal-overlay' id='agreementModal'>"
            "<div class='agreement-modal-content'>"
            "<div class='agreement-modal-header'>ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ</div>"
@@ -539,33 +573,27 @@ void output_no_reg_page(const QueryParams *params) {
            "<script src='/js/jquery.min.js'></script>"
            "<script src='/js/jquery.maskedinput.js'></script>"
            "<script>"
-           "// Простые переменные"
            "var s1=document.getElementById('step1'),s2=document.getElementById('step2'),v=document.getElementById('videoPlayer'),am=document.getElementById('agreementModal');"
 
-           "// 1. Кнопка старта видео"
            "document.getElementById('startBtn').onclick=function(){"
            "    s1.style.display='none';"
            "    s2.style.display='block';"
            "    v.play();"
            "};"
 
-           "// 2. Ссылка соглашения"  
            "document.querySelector('.agreement-link').onclick=function(){"
            "    am.style.display='flex';"
            "};"
 
-           "// 3. Кнопка закрытия соглашения"
            "document.querySelector('.agreement-modal-btn').onclick=function(){"
            "    am.style.display='none';"
            "};"
 
-           "// 4. Завершение видео"
            "v.addEventListener('ended',function(){"
            "    s2.style.display='none';"
            "    document.getElementById('step3').style.display='block';"
            "});"
 
-           "// 5. Таймаут 15 секунд"
            "setTimeout(function(){"
            "    if(s1.style.display!=='none'){"
            "        s1.style.display='none';"
@@ -573,12 +601,10 @@ void output_no_reg_page(const QueryParams *params) {
            "    }"
            "},15000);"
 
-           "// 6. Чекбокс согласия"
            "document.getElementById('check_box').addEventListener('change',function(){"
            "    document.getElementById('call_link').style.display=this.checked?'block':'none';"
            "});"
 
-           "// 7. Кнопка звонка"
            "document.getElementById('call_link').addEventListener('click',function(e){"
            "    e.preventDefault();"
            "    var d=new URLSearchParams();"
@@ -602,12 +628,10 @@ void output_no_reg_page(const QueryParams *params) {
            "    });"
            "});"
 
-           "// 8. Маска телефона"
            "$(document).ready(function(){"
            "    $('.phone_mask').mask('+7(999)999-99-99');"
            "});"
 
-           "// 9. Статистика"
            "window.addEventListener('load',function(){"
            "    let x=new XMLHttpRequest();"
            "    x.open('GET','%s?gateName=%s&pageName=/img/logos/%s&mac=%s');"
@@ -618,15 +642,14 @@ void output_no_reg_page(const QueryParams *params) {
            logo,
            video,
            banner,
-           params->token, params->authaction, params->gateway, params->mac, params->redir,
+           params->token, params->authaction, params->gateway, mac, params->redir,
            config.phone_number,
            config.phone_number,
-           config.stat_url, params->gateway, logo, params->mac);
+           config.stat_url, params->gateway, logo, mac);
 }
 
 // Главная функция
 int main() {
-    // Устанавливаем локаль для поддержки UTF-8
     setlocale(LC_ALL, "C.UTF-8");
     
     openlog("auth-handler", LOG_PID, LOG_DAEMON);
@@ -636,7 +659,6 @@ int main() {
         return 1;
     }
     
-    // Инициализация медиа ротации
     if (init_media_rotation() != 0) {
         printf("Content-type: text/plain; charset=UTF-8\r\n\r\nОшибка инициализации медиа\n");
         return 1;
@@ -648,7 +670,7 @@ int main() {
     if (!query_string) {
         printf("Content-type: text/plain; charset=UTF-8\r\n\r\nНет параметров\n");
         curl_global_cleanup();
-        save_rotation(); // Сохраняем состояние перед выходом
+        save_rotation();
         free_media_rotation();
         closelog();
         return 1;
@@ -657,28 +679,43 @@ int main() {
     QueryParams params = {0};
     parse_query_string(query_string, &params);
     
-    if (!params.mac[0]) {
-        printf("Content-type: text/plain; charset=UTF-8\r\n\r\nНет MAC\n");
+    // Проверяем наличие IP адреса
+    if (!params.ip[0]) {
+        printf("Content-type: text/plain; charset=UTF-8\r\n\r\nНет IP адреса клиента\n");
         curl_global_cleanup();
-        save_rotation(); // Сохраняем состояние перед выходом
+        save_rotation();
         free_media_rotation();
         closelog();
         return 1;
     }
     
-    char *server_mac = NULL;
-    int result = check_mac_on_server(params.mac, &server_mac);
-    
-    if (result == 0 && server_mac && strcmp(server_mac, params.mac) == 0) {
-        output_reg_page(&params);
-        char cmd[256];
-        snprintf(cmd, sizeof(cmd), "ndsctl auth \"%s\" >/dev/null 2>&1", server_mac);
-        system(cmd);
-    } else {
-        output_no_reg_page(&params);
+    // Получаем MAC из DHCP leases по IP
+    char client_mac[20] = {0};
+    if (get_mac_from_dhcp_leases(params.ip, client_mac, sizeof(client_mac)) != 0) {
+        printf("Content-type: text/plain; charset=UTF-8\r\n\r\nНе удалось определить MAC адрес\n");
+        curl_global_cleanup();
+        save_rotation();
+        free_media_rotation();
+        closelog();
+        return 1;
     }
     
-    // Сохраняем новое состояние ротации
+    syslog(LOG_INFO, "Processing request for IP: %s, MAC: %s", params.ip, client_mac);
+    
+    char *server_mac = NULL;
+    int result = check_mac_on_server(client_mac, &server_mac);
+    
+    if (result == 0 && server_mac && strcmp(server_mac, client_mac) == 0) {
+        output_reg_page(&params, client_mac);
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "ndsctl auth \"%s\" >/dev/null 2>&1", client_mac);
+        system(cmd);
+        syslog(LOG_INFO, "Client %s authenticated via ndsctl", client_mac);
+    } else {
+        output_no_reg_page(&params, client_mac);
+        syslog(LOG_INFO, "Client %s not registered, showing registration page", client_mac);
+    }
+    
     save_rotation();
     
     if (server_mac) free(server_mac);
