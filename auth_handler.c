@@ -413,6 +413,7 @@ void url_decode(char *dst, size_t dst_size, const char *src) {
 */
 // Парсинг query string (с поддержкой вложенных параметров в authaction)
 void parse_query_string(const char *query, QueryParams *params) {
+
     if (!query || !*query) return;
     
     char *query_copy = strdup(query);
@@ -741,7 +742,6 @@ int main() {
 
     QueryParams params = {0};
     parse_query_string(query_string, &params);
-
     // Проверяем наличие IP адреса
     if (!params.ip[0]) {
         printf("Content-type: text/plain; charset=UTF-8\r\n\r\nНет IP адреса клиента\n");
@@ -751,7 +751,16 @@ int main() {
         closelog();
         return 1;
     }
-
+    const char *real_ip = getenv("REMOTE_ADDR");
+    if (!real_ip || strcmp(real_ip, params.ip) != 0) {
+        syslog(LOG_WARNING, "clientip mismatch: claimed=%s real=%s", params.ip, real_ip ? real_ip : "(null)");
+        printf("Content-type: text/plain; charset=UTF-8\r\n\r\nНесоответствие IP\n");
+        curl_global_cleanup();
+        save_rotation();
+        free_media_rotation();
+        closelog();
+        return 1;
+    }
     // Получаем MAC из DHCP leases по IP
     char client_mac[20] = {0};
     if (get_mac_from_dhcp_leases(params.ip, client_mac, sizeof(client_mac)) != 0) {
