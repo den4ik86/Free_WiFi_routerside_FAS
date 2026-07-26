@@ -364,8 +364,33 @@ static size_t write_callback(void *contents, size_t size, size_t nmemb, void *us
     return realsize;
 }
 
+void url_decode(char *dst, size_t dst_size, const char *src) {
+    if (dst_size == 0) return;
+    char a, b;
+    size_t written = 0;
+    // оставляем 1 байт под '\0'
+    while (*src && written + 1 < dst_size) {
+        if (*src == '%' && (a = src[1]) && (b = src[2]) &&
+            isxdigit((unsigned char)a) && isxdigit((unsigned char)b)) {
+            if (a >= 'a') a -= 'a' - 'A';
+            if (a >= 'A') a -= ('A' - 10); else a -= '0';
+            if (b >= 'a') b -= 'a' - 'A';
+            if (b >= 'A') b -= ('A' - 10); else b -= '0';
+            *dst++ = 16 * a + b;
+            src += 3;
+        } else if (*src == '+') {
+            *dst++ = ' ';
+            src++;
+        } else {
+            *dst++ = *src++;
+        }
+        written++;
+    }
+    *dst = 0;
+}
+
 // Декодирование URL
-void url_decode(char *dst, const char *src) {
+/* void url_decode(char *dst, const char *src) {
     char a, b;
     while (*src) {
         if (*src == '%' && (a = src[1]) && (b = src[2]) &&
@@ -385,7 +410,7 @@ void url_decode(char *dst, const char *src) {
     }
     *dst = 0;
 }
-
+*/
 // Парсинг query string (с поддержкой вложенных параметров в authaction)
 void parse_query_string(const char *query, QueryParams *params) {
     if (!query || !*query) return;
