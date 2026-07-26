@@ -18,7 +18,7 @@ define Package/$(PKG_NAME)
   SUBMENU:=Captive Portal
   TITLE:=WiFi Authentication Handler
   DEPENDS:=+libuci +libcurl +jansson +libpthread
-  PKGARCH:=all
+  #PKGARCH:=all
 endef
 
 define Package/$(PKG_NAME)/description
