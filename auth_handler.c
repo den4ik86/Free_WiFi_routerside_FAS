@@ -423,7 +423,7 @@ void parse_query_string(const char *query, QueryParams *params) {
         if (eq) {
             *eq = 0;
             char decoded[512];
-            url_decode(decoded, eq + 1);
+            url_decode(decoded, sizeof(decoded), eq + 1);
             
             if (strcmp(token, "authaction") == 0) {
                 strncpy(params->authaction, decoded, sizeof(params->authaction)-1);
@@ -440,7 +440,7 @@ void parse_query_string(const char *query, QueryParams *params) {
                         if (nested_eq) {
                             *nested_eq = 0;
                             char nested_decoded[512];
-                            url_decode(nested_decoded, nested_eq + 1);
+                            url_decode(nested_decoded, sizeof(nested_decoded), nested_eq + 1);
                             
                             if (strcmp(nested_token, "clientip") == 0) {
                                 strncpy(params->ip, nested_decoded, sizeof(params->ip)-1);
